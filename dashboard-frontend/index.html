@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Incident Triage Dashboard</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}body{font-family:Inter,-apple-system,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh}
+.header{background:#1e293b;padding:16px 24px;border-bottom:1px solid #334155;display:flex;align-items:center;justify-content:space-between}
+.header h1{font-size:20px;font-weight:600}.header span{color:#94a3b8;font-size:13px}
+.container{max-width:1200px;margin:0 auto;padding:20px}
+.filters{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
+.filter-btn{padding:6px 14px;border-radius:6px;border:1px solid #334155;background:#1e293b;color:#94a3b8;cursor:pointer;font-size:13px;transition:all .15s}
+.filter-btn:hover{border-color:#475569}.filter-btn.active{background:#334155;color:#e2e8f0;border-color:#475569}
+.sev-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
+.sev-critical{background:#ef4444;color:#fca5a5}.sev-high{background:#f97316;color:#fdba74}
+.sev-medium{background:#eab308;color:#fde047}.sev-low{background:#22c55e;color:#86efac}
+.sev-dot.critical{background:#ef4444}.sev-dot.high{background:#f97316}.sev-dot.medium{background:#eab308}.sev-dot.low{background:#22c55e}
+table{width:100%;border-collapse:collapse;background:#1e293b;border-radius:8px;overflow:hidden}
+th{text-align:left;padding:10px 14px;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:#94a3b8;background:#0f172a;border-bottom:1px solid #334155}
+td{padding:10px 14px;border-bottom:1px solid #1e293b;font-size:13px;cursor:pointer}
+tr:hover td{background:#334155}
+.badge{padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600}
+.status-new{background:#1e3a5f;color:#93c5fd}.status-investigating{background:#422006;color:#fbbf24}
+.status-escalated{background:#450a0a;color:#fca5a5}.status-resolved{background:#052e16;color:#86efac}
+.detail-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:50}
+.detail-panel{background:#1e293b;border-radius:12px;padding:24px;width:560px;max-height:80vh;overflow-y:auto;border:1px solid #334155}
+.detail-panel h2{margin-bottom:12px;font-size:18px}.detail-panel .field{margin-bottom:10px}
+.detail-panel .label{font-size:11px;text-transform:uppercase;color:#94a3b8;letter-spacing:.04em}
+.detail-panel .value{margin-top:2px;font-size:14px}
+.close-btn{float:right;background:none;border:none;color:#94a3b8;cursor:pointer;font-size:20px}
+.close-btn:hover{color:#e2e8f0}
+.actions{display:flex;gap:8px;margin-top:16px}
+.act-btn{padding:6px 14px;border-radius:6px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;cursor:pointer;font-size:13px}
+.act-btn:hover{background:#334155}.act-btn.primary{background:#1d4ed8;border-color:#1d4ed8}.act-btn.primary:hover{background:#2563eb}
+</style>
+</head>
+<body><div id="root"></div>
+<script type="text/babel">
+const{useState,useEffect,useCallback}=React;
+
+const API_BASE=window.INCIDENT_API||'http://localhost:8000';
+const SEVERITIES=['all','critical','high','medium','low'];
+const STATUSES=['new','investigating','escalated','resolved'];
+
+const MOCK_INCIDENTS=[
+  {id:'INC-001',title:'Database connection pool exhausted',severity:'critical',status:'investigating',service:'auth-api',created_at:'2025-01-15T09:23:00Z',description:'Primary DB connection pool reached max connections. Multiple services affected.',alerts_count:12,assignee:'oncall-primary'},
+  {id:'INC-002',title:'Elevated 5xx rate on payment gateway',severity:'high',status:'new',service:'payment-svc',created_at:'2025-01-15T09:45:00Z',description:'Error rate exceeded 5% threshold on payment processing endpoint.',alerts_count:5,assignee:null},
+  {id:'INC-003',title:'Disk usage >90% on log aggregator',severity:'medium',status:'investigating',service:'log-aggregator',created_at:'2025-01-15T08:10:00Z',description:'Log volume spike filling disk partitions faster than retention policy clears.',alerts_count:3,assignee:'platform-team'},
+  {id:'INC-004',title:'SSL certificate expiry in 7 days',severity:'low',status:'new',service:'cdn-edge',created_at:'2025-01-15T07:00:00Z',description:'Wildcard certificate for *.example.com expires Jan 22.',alerts_count:1,assignee:null},
+  {id:'INC-005',title:'Kafka consumer lag exceeding threshold',severity:'high',status:'escalated',service:'event-processor',created_at:'2025-01-15T06:30:00Z',description:'Consumer group lag >100k messages across 3 partitions.',alerts_count:8,assignee:'data-team'},
+  {id:'INC-006',title:'Memory leak in recommendation engine',severity:'medium',status:'new',service:'rec-engine',created_at:'2025-01-15T10:00:00Z',description:'RSS growing ~50MB/hr, no corresponding traffic increase.',alerts_count:2,assignee:null},
+  {id:'INC-007',title:'Regional API latency spike',severity:'critical',status:'escalated',service:'api-gateway',created_at:'2025-01-15T10:15:00Z',description:'P99 latency >5s in us-east-1 region affecting all downstream services.',alerts_count:15,assignee:'oncall-primary'},
+];
+
+async function fetchIncidents(){
+  try{const r=await fetch(`${API_BASE}/incidents`);if(r.ok)return await r.json();}
+  catch(e){console.warn('API unavailable, using mock data');}
+  return MOCK_INCIDENTS;
+}
+
+async function updateIncident(id,patch){
+  try{const r=await fetch(`${API_BASE}/incidents/${id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(patch)});if(r.ok)return await r.json();}
+  catch(e){console.warn('API unavailable');}
+  return null;
+}
+
+function SevBadge({severity}){
+  return <span className={`badge sev-${severity}`}><span className={`sev-dot ${severity}`}/>{severity.toUpperCase()}</span>;
+}
+
+function StatusBadge({status}){
+  const label=status.charAt(0).toUpperCase()+status.slice(1);
+  return <span className={`badge status-${status}`}>{label}</span>;
+}
+
+function IncidentTable({incidents,onSelect}){
+  if(!incidents.length)return <p style={{textAlign:'center',padding:32,color:'#94a3b8'}}>No incidents match current filters.</p>;
+  return (
+    <table>
+      <thead><tr><th>ID</th><th>Severity</th><th>Status</th><th>Service</th><th>Title</th><th>Alerts</th><th>Created</th></tr></thead>
+      <tbody>
+        {incidents.map(inc=>(
+          <tr key={inc.id} onClick={()=>onSelect(inc)}>
+            <td style={{fontFamily:'monospace',color:'#93c5fd'}}>{inc.id}</td>
+            <td><SevBadge severity={inc.severity}/></td>
+            <td><StatusBadge status={inc.status}/></td>
+            <td style={{color:'#94a3b8'}}>{inc.service}</td>
+            <td>{inc.title}</td>
+            <td style={{textAlign:'center'}}>{inc.alerts_count}</td>
+            <td style={{color:'#94a3b8',fontSize:12}}>{new Date(inc.created_at).toLocaleString()}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function IncidentDetail({incident,onClose,onStatusChange}){
+  if(!incident)return null;
+  const nextStatus=STATUSES[STATUSES.indexOf(incident.status)+1];
+  return (
+    <div className="detail-overlay" onClick={e=>{if(e.target===e.currentTarget)onClose()}}>
+      <div className="detail-panel">
+        <button className="close-btn" onClick={onClose}>&times;</button>
+        <h2>{incident.id}: {incident.title}</h2>
+        <div className="field"><div className="label">Severity</div><div className="value"><SevBadge severity={incident.severity}/></div></div>
+        <div className="field"><div className="label">Status</div><div className="value"><StatusBadge status={incident.status}/></div></div>
+        <div className="field"><div className="label">Service</div><div className="value">{incident.service}</div></div>
+        <div className="field"><div className="label">Assignee</div><div className="value">{incident.assignee||'Unassigned'}</div></div>
+        <div className="field"><div className="label">Alerts Correlated</div><div className="value">{incident.alerts_count}</div></div>
+        <div className="field"><div className="label">Created</div><div className="value">{new Date(incident.created_at).toLocaleString()}</div></div>
+        <div className="field"><div className="label">Description</div><div className="value">{incident.description}</div></div>
+        <div className="actions">
+          {nextStatus&&<button className="act-btn primary" onClick={()=>onStatusChange(incident.id,nextStatus)}>Advance to {nextStatus}</button>}
+          {incident.status!=='resolved'&&<button className="act-btn" onClick={()=>onStatusChange(incident.id,'resolved')}>Resolve</button>}
+          <button className="act-btn" onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function App(){
+  const[incidents,setIncidents]=useState([]);
+  const[sevFilter,setSevFilter]=useState('all');
+  const[selected,setSelected]=useState(null);
+  const[loading,setLoading]=useState(true);
+
+  useEffect(()=>{fetchIncidents().then(d=>{setIncidents(d);setLoading(false)})},[]);
+
+  const filtered=sevFilter==='all'?incidents:incidents.filter(i=>i.severity===sevFilter);
+  const counts=SEVERITIES.slice(1).reduce((acc,s)=>{acc[s]=incidents.filter(i=>i.severity===s).length;return acc},{});
+
+  const handleStatusChange=useCallback(async(id,status)=>{
+    const updated=await updateIncident(id,{status});
+    setIncidents(prev=>prev.map(i=>i.id===id?{...i,...(updated||{status})}:i));
+    setSelected(prev=>prev&&prev.id===id?{...prev,...(updated||{status})}:prev);
+  },[]);
+
+  return (
+    <div>
+      <div className="header"><h1>Incident Triage</h1><span>{incidents.length} incidents &middot; {incidents.filter(i=>i.status!=='resolved').length} active</span></div>
+      <div className="container">
+        <div className="filters">
+          {SEVERITIES.map(s=>(
+            <button key={s} className={`filter-btn${sevFilter===s?' active':''}`} onClick={()=>setSevFilter(s)}>
+              {s==='all'?'All':s.charAt(0).toUpperCase()+s.slice(1)}{s!=='all'&&counts[s]?` (${counts[s]})`:s==='all'?` (${incidents.length})`:''}
+            </button>
+          ))}
+        </div>
+        {loading?<p style={{textAlign:'center',padding:32}}>Loading...</p>:<IncidentTable incidents={filtered} onSelect={setSelected}/>}
+      </div>
+      {selected&&<IncidentDetail incident={selected} onClose={()=>setSelected(null)} onStatusChange={handleStatusChange}/>}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
